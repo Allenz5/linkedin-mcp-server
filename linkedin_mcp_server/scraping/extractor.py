@@ -56,7 +56,7 @@ _RATE_LIMIT_RETRY_DELAY = 5.0
 _RATE_LIMITED_MSG = "[Rate limited] LinkedIn blocked this section. Try again later or request fewer sections."
 
 # LinkedIn shows 25 results per page
-_PAGE_SIZE = 25
+_PAGE_SIZE = 10
 
 # Normalization maps for job search filters
 _DATE_POSTED_MAP = {
@@ -2555,7 +2555,7 @@ class LinkedInExtractor:
 
         await handle_modal_close(self._page)
         if main_found:
-            await scroll_job_sidebar(self._page, pause_time=0.5, max_scrolls=5)
+            await scroll_job_sidebar(self._page, pause_time=1.5, max_scrolls=20)
 
         raw_result = await self._extract_root_content(["main"])
         raw = raw_result["text"]
@@ -2746,6 +2746,9 @@ class LinkedInExtractor:
                     break
                 page_ids = await self._extract_job_ids()
                 new_ids = [jid for jid in page_ids if jid not in seen_ids]
+                # TEMP DIAGNOSTIC — remove later (stderr, not stdout, to avoid breaking MCP JSON-RPC)
+                import sys as _sys
+                print(f"[DIAG] page={page_num + 1} url={url} raw_ids={len(page_ids)} new_after_dedup={len(new_ids)}", file=_sys.stderr, flush=True)
 
                 if not new_ids:
                     page_texts.append(extracted.text)

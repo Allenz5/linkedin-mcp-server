@@ -81,7 +81,7 @@ def register_job_tools(
         keywords: str,
         ctx: Context,
         location: str | None = None,
-        max_pages: Annotated[int, Field(ge=1, le=10)] = 3,
+        max_pages: Annotated[int, Field(ge=1, le=50)] = 3,
         date_posted: str | None = None,
         job_type: str | None = None,
         experience_level: str | None = None,
