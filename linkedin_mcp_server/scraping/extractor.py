@@ -6,7 +6,9 @@ import asyncio
 from dataclasses import dataclass
 import json
 import logging
+import os
 import re
+import time
 from typing import TYPE_CHECKING, Any, Literal
 from urllib.parse import parse_qs, quote_plus, urljoin, urlparse
 
@@ -57,6 +59,25 @@ _RATE_LIMITED_MSG = "[Rate limited] LinkedIn blocked this section. Try again lat
 
 # LinkedIn shows 25 results per page
 _PAGE_SIZE = 10
+
+# Stop paginating this many seconds before the server-side tool timeout. FastMCP
+# cancels the whole tool call when it exceeds TOOL_TIMEOUT and discards the
+# accumulated job_ids; stopping early lets the pages gathered so far return
+# cleanly instead of being lost to an McpError.
+_SEARCH_TIMEOUT_MARGIN = 25.0
+_DEFAULT_TOOL_TIMEOUT = 180.0
+
+
+def _search_time_budget() -> float:
+    """Soft pagination budget = the server-side tool timeout minus a safety
+    margin. Mirrors the TOOL_TIMEOUT env read by the config loader so the
+    budget tracks however the server was launched."""
+    raw = os.environ.get("TOOL_TIMEOUT")
+    try:
+        tool_timeout = float(raw) if raw else _DEFAULT_TOOL_TIMEOUT
+    except ValueError:
+        tool_timeout = _DEFAULT_TOOL_TIMEOUT
+    return max(tool_timeout - _SEARCH_TIMEOUT_MARGIN, _SEARCH_TIMEOUT_MARGIN)
 
 # Normalization maps for job search filters
 _DATE_POSTED_MAP = {
@@ -2694,15 +2715,37 @@ class LinkedInExtractor:
         total_pages: int | None = None
         total_pages_queried = False
 
+        budget = _search_time_budget()
+        search_start = time.monotonic()
+        last_page_secs = 0.0
+
         for page_num in range(max_pages):
             # Stop if we already know we've reached the last page
             if total_pages is not None and page_num >= total_pages:
                 logger.debug("All %d pages fetched, stopping", total_pages)
                 break
 
+            # Soft time budget: bail out before FastMCP cancels the whole call,
+            # so the pages gathered so far are returned instead of discarded.
+            # Estimate the next page's cost from the previous one and stop if it
+            # wouldn't finish in time. page 0 always runs.
+            elapsed = time.monotonic() - search_start
+            if page_num > 0 and elapsed + last_page_secs >= budget:
+                logger.warning(
+                    "Search time budget reached (%.0fs elapsed, budget %.0fs); "
+                    "returning %d job IDs from %d pages instead of risking a "
+                    "tool timeout",
+                    elapsed,
+                    budget,
+                    len(all_job_ids),
+                    page_num,
+                )
+                break
+
             if page_num > 0:
                 await asyncio.sleep(_NAV_DELAY)
 
+            page_started = time.monotonic()
             url = (
                 base_url
                 if page_num == 0
@@ -2764,6 +2807,10 @@ class LinkedInExtractor:
                 page_texts.append(extracted.text)
                 if extracted.references:
                     page_references.extend(extracted.references)
+
+                # Record this page's cost so the budget check above can predict
+                # whether the next page will finish before the tool timeout.
+                last_page_secs = time.monotonic() - page_started
 
             except LinkedInScraperException:
                 raise
